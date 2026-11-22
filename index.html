@@ -205,6 +205,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
       </div>
       <div class="row">
         <span class="sm muted" id="sync" role="status"></span>
+        <button class="btn small" id="logout" type="button" hidden>Đăng xuất</button>
         <button class="btn small" id="bk-out" type="button">Sao lưu</button>
         <button class="btn small" id="bk-in" type="button">Khôi phục</button>
       </div>
@@ -271,6 +272,19 @@ input[type=range]{width:100%;accent-color:var(--accent)}
   </div>
 </div>
 
+<div class="overlay" id="login" hidden role="dialog" aria-label="Đăng nhập" style="z-index:70">
+  <div class="ov-in" style="max-width:380px;padding-top:12vh">
+    <h2 style="margin-bottom:6px">Tủ Đồ</h2>
+    <p class="muted sm" style="margin:0 0 16px">Đăng nhập để mở dữ liệu của bạn.</p>
+    <form id="lg-form" class="tools">
+      <div class="field"><label for="lg-email">Email</label><input type="text" id="lg-email" inputmode="email" autocomplete="username" autocapitalize="none" spellcheck="false"></div>
+      <div class="field"><label for="lg-pass">Mật khẩu</label><input type="password" id="lg-pass" autocomplete="current-password" style="min-height:40px;border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:0 10px;width:100%"></div>
+      <div id="lg-msg" class="sm" style="color:var(--bad);min-height:18px" role="alert"></div>
+      <button class="btn primary" id="lg-go" type="submit">Đăng nhập</button>
+    </form>
+  </div>
+</div>
+
 <div class="overlay" id="pk" hidden role="dialog" aria-label="Chọn món đồ">
   <div class="ov-in" style="max-width:680px">
     <div class="ov-bar"><strong id="pk-title"></strong><button class="btn primary" id="pk-done" type="button">Xong</button></div>
@@ -284,6 +298,7 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 <div class="toast" id="toast" hidden role="status"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script>
 'use strict';
 /* ---------- helpers ---------- */
@@ -352,8 +367,8 @@ function purgeItems(ids){
   clean(state.mix.outfit);state.outfits.forEach(x=>clean(x.slots));state.trip.spots.forEach(s=>clean(s.outfit));saveKV()}
 
 /* ---------- lưu trữ: db trên web (1 người dùng), dự phòng IndexedDB ---------- */
-const store={db:false};let dbBase=null,idb=null,pend=0,errT=0;const lastSaved={},chains=new Map();
-function setSync(){const e=$('#sync');if(!e)return;e.textContent=pend?'Đang lưu…':store.db?'Đã lưu trên web':idb?'Lưu trong trình duyệt':'Chưa lưu được'}
+const store={db:false,sb:false};let dbBase=null,idb=null,pend=0,errT=0;const lastSaved={},chains=new Map();
+function setSync(){const e=$('#sync');if(!e)return;e.textContent=pend?'Đang lưu…':store.sb?'Đã lưu trên Supabase':store.db?'Đã lưu trên web':idb?'Lưu trong trình duyệt':'Chưa lưu được'}
 function dbErr(e){const now=Date.now();if(now-errT<4000)return;errT=now;toast(e&&e.code==='quota_exceeded'?'Bộ nhớ lưu trữ đã đầy, hãy xoá bớt món hoặc ảnh':'Chưa lưu được lên web, sẽ thử lại ở lần thay đổi sau')}
 function chain(key,fn){pend++;setSync();const prev=chains.get(key)||Promise.resolve();
   const p=prev.catch(()=>{}).then(fn).catch(e=>{dbErr(e);return null}).finally(()=>{pend--;setSync()});chains.set(key,p);return p}
@@ -367,17 +382,18 @@ function tx(st,mode,fn){return new Promise(res=>{
   try{const t=idb.transaction(st,mode);const rq=fn(t.objectStore(st));
     t.oncomplete=()=>res(rq?rq.result:true);t.onerror=t.onabort=()=>res(null);}catch(e){res(null)}})}
 const clone=v=>JSON.parse(JSON.stringify(v));
-const saveItem=it=>store.db?chain('i'+it.id,()=>dbBase.collection('items').doc(it.id).set(clone(it))):tx('items','readwrite',s=>s.put(it));
-const delItem=id=>store.db?chain('i'+id,()=>dbBase.collection('items').doc(id).delete()):tx('items','readwrite',s=>s.delete(id));
-const savePhoto=(id,data)=>store.db?chain('p'+id,()=>dbBase.collection('photos').doc(id).set({data})):Promise.resolve();
-const delPhoto=id=>store.db?chain('p'+id,()=>dbBase.collection('photos').doc(id).delete()):Promise.resolve();
+const remote=()=>store.db||store.sb;
+const saveItem=it=>store.sb?chain('i'+it.id,()=>sbPut('item',it.id,clone(it))):store.db?chain('i'+it.id,()=>dbBase.collection('items').doc(it.id).set(clone(it))):tx('items','readwrite',s=>s.put(it));
+const delItem=id=>store.sb?chain('i'+id,()=>sbDel('item',id)):store.db?chain('i'+id,()=>dbBase.collection('items').doc(id).delete()):tx('items','readwrite',s=>s.delete(id));
+const savePhoto=(id,data)=>store.sb?chain('p'+id,()=>sbPut('photo',id,{data})):store.db?chain('p'+id,()=>dbBase.collection('photos').doc(id).set({data})):Promise.resolve();
+const delPhoto=id=>store.sb?chain('p'+id,()=>sbDel('photo',id)):store.db?chain('p'+id,()=>dbBase.collection('photos').doc(id).delete()):Promise.resolve();
 function putKV(k,v){
-  if(!store.db)return tx('kv','readwrite',s=>s.put(v,k));
+  if(!remote())return tx('kv','readwrite',s=>s.put(v,k));
   const j=JSON.stringify(v);
-  return chain('k'+k,async()=>{if(lastSaved[k]===j)return;await dbBase.collection('kv').doc(k).set({v:JSON.parse(j)});lastSaved[k]=j})}
+  return chain('k'+k,async()=>{if(lastSaved[k]===j)return;const val={v:JSON.parse(j)};if(store.sb)await sbPut('kv',k,val);else await dbBase.collection('kv').doc(k).set(val);lastSaved[k]=j})}
 const tripLite=()=>({...state.trip,spots:state.trip.spots.map(s=>({...s,photo:null,hasPhoto:!!s.photo}))});
 let kvT=null;
-function saveKV(){clearTimeout(kvT);kvT=setTimeout(()=>{putKV('trip',store.db?tripLite():state.trip);putKV('outfits',state.outfits);putKV('custom',state.custom);putKV('settings',state.settings)},400)}
+function saveKV(){clearTimeout(kvT);kvT=setTimeout(()=>{putKV('trip',remote()?tripLite():state.trip);putKV('outfits',state.outfits);putKV('custom',state.custom);putKV('settings',state.settings)},400)}
 const TRIP0=()=>({name:'',from:'',to:'',weather:'any',spots:[]});
 function applyLoaded(items,kv,ph){
   state.items=items.filter(i=>i&&i.id).sort((a,b)=>(b.t||0)-(a.t||0));
@@ -391,10 +407,48 @@ async function loadIdb(){
   const items=await tx('items','readonly',s=>s.getAll());
   const g=async k=>tx('kv','readonly',s=>s.get(k));
   return {items:Array.isArray(items)?items:[],kv:{trip:await g('trip'),outfits:await g('outfits'),custom:await g('custom'),settings:await g('settings')}}}
+const SB_URL='https://cjzxcfceigqtgdrgsbqe.supabase.co',SB_KEY='sb_publishable_Ov7D1HprV2y0JHt72nL4Kg_ay9bk76o';
+let sb=null,sbUid=null;
+const sbCk=r=>{if(r&&r.error)throw r.error;return r};
+const sbPut=(coll,id,obj)=>sb.from('store').upsert({user_id:sbUid,key:coll+':'+id,data:obj,updated_at:new Date().toISOString()},{onConflict:'user_id,key'}).then(sbCk);
+const sbDel=(coll,id)=>sb.from('store').delete().eq('key',coll+':'+id).then(sbCk);
+async function migrateLocal(){
+  const loc=await loadIdb();
+  if(loc&&(loc.items.length||(loc.kv.trip&&loc.kv.trip.spots&&loc.kv.trip.spots.length)||(loc.kv.outfits||[]).length)){
+    applyLoaded(loc.items,loc.kv,null);
+    for(const it of state.items)await saveItem(it);
+    state.trip.spots.forEach(s=>{if(s.photo)savePhoto(s.id,s.photo)});
+    saveKV();toast('Đã chuyển dữ liệu từ trình duyệt lên web')}}
+function loginGate(){return new Promise(res=>{
+  const o=$('#login'),em=$('#lg-email'),pw=$('#lg-pass'),btn=$('#lg-go'),msg=$('#lg-msg');o.hidden=false;
+  $('#lg-form').onsubmit=async e=>{e.preventDefault();msg.textContent='';btn.disabled=true;
+    try{const r=await sb.auth.signInWithPassword({email:em.value.trim(),password:pw.value});
+      if(r.error){msg.textContent='Email hoặc mật khẩu chưa đúng';btn.disabled=false;return}
+      o.hidden=true;res(r.data.session)}
+    catch(err){msg.textContent='Không kết nối được, hãy kiểm tra mạng';btn.disabled=false}};
+  setTimeout(()=>em.focus(),50)})}
+async function initSupabase(){
+  try{
+    sb=window.supabase.createClient(SB_URL,SB_KEY);
+    const g=await sb.auth.getSession();let session=g&&g.data&&g.data.session;
+    if(!session)session=await loginGate();
+    sbUid=session.user.id;
+    const rows=[];
+    for(let a=0;;a+=500){const r=await sb.from('store').select('key,data').order('key').range(a,a+499);if(r.error)throw r.error;rows.push(...r.data);if(r.data.length<500)break}
+    store.sb=true;state.persist=true;
+    const items=[],kv={},ph={};
+    rows.forEach(r=>{const i=r.key.indexOf(':'),c=r.key.slice(0,i),id=r.key.slice(i+1);
+      if(c==='item')items.push(r.data);else if(c==='kv')kv[id]=r.data.v;else if(c==='photo')ph[id]=r.data.data});
+    applyLoaded(items,kv,ph);
+    if(!rows.length)await migrateLocal();
+    const lo=$('#logout');lo.hidden=false;lo.onclick=async()=>{try{await sb.auth.signOut()}catch(e){}location.reload()};
+    setSync();return true}
+  catch(e){store.sb=false;sb=null;toast('Chưa kết nối được Supabase, đang dùng bộ nhớ trình duyệt');return false}}
 async function initStore(){
   let db=null,uid=null;
   try{if(window.claude){db=await window.claude.use('db');const u=await window.claude.use('user');if(u)uid=await u.id()}}catch(e){}
   idb=await openDB();
+  if(!db&&window.supabase&&SB_URL&&await initSupabase())return;
   if(db&&uid){
     try{
       const base=db.doc('data/users/'+uid+'/app');
@@ -402,13 +456,7 @@ async function initStore(){
       const [is,kv,ph]=await Promise.race([Promise.all([base.collection('items').get(),base.collection('kv').get(),base.collection('photos').get()]),to]);
       dbBase=base;store.db=true;state.persist=true;
       applyLoaded(is.docs.map(d=>d.data()),Object.fromEntries(kv.docs.map(d=>[d.id,d.data().v])),Object.fromEntries(ph.docs.map(d=>[d.id,d.data().data])));
-      if(!is.docs.length&&!kv.docs.length){
-        const loc=await loadIdb();
-        if(loc&&(loc.items.length||(loc.kv.trip&&loc.kv.trip.spots&&loc.kv.trip.spots.length)||(loc.kv.outfits||[]).length)){
-          applyLoaded(loc.items,loc.kv,null);
-          for(const it of state.items)await saveItem(it);
-          state.trip.spots.forEach(s=>{if(s.photo)savePhoto(s.id,s.photo)});
-          saveKV();toast('Đã chuyển dữ liệu từ trình duyệt lên web')}}
+      if(!is.docs.length&&!kv.docs.length)await migrateLocal();
       setSync();return}
     catch(e){store.db=false;dbBase=null;toast('Chưa kết nối được nơi lưu trên web, đang dùng bộ nhớ trình duyệt')}}
   state.persist=!!idb;
