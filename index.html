@@ -314,7 +314,7 @@ function h(tag,props,...kids){
   return e;
 }
 const uid=()=>Math.random().toString(36).slice(2,10)+Date.now().toString(36).slice(-4);
-let toastT;function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,2600)}
+let toastT;function toast(m,ms){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,ms||2600)}
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 
 /* ---------- data model ---------- */
@@ -367,8 +367,8 @@ function purgeItems(ids){
   clean(state.mix.outfit);state.outfits.forEach(x=>clean(x.slots));state.trip.spots.forEach(s=>clean(s.outfit));saveKV()}
 
 /* ---------- lưu trữ: db trên web (1 người dùng), dự phòng IndexedDB ---------- */
-const store={db:false,sb:false};let dbBase=null,idb=null,pend=0,errT=0;const lastSaved={},chains=new Map();
-function setSync(){const e=$('#sync');if(!e)return;e.textContent=pend?'Đang lưu…':store.sb?'Đã lưu trên Supabase':store.db?'Đã lưu trên web':idb?'Lưu trong trình duyệt':'Chưa lưu được'}
+const store={db:false,sb:false,err:''};let dbBase=null,idb=null,pend=0,errT=0;const lastSaved={},chains=new Map();
+function setSync(){const e=$('#sync');if(!e)return;e.textContent=store.err&&!store.sb?store.err:pend?'Đang lưu…':store.sb?'Đã lưu trên Supabase':store.db?'Đã lưu trên web':idb?'Lưu trong trình duyệt':'Chưa lưu được'}
 function dbErr(e){const now=Date.now();if(now-errT<4000)return;errT=now;toast(e&&e.code==='quota_exceeded'?'Bộ nhớ lưu trữ đã đầy, hãy xoá bớt món hoặc ảnh':'Chưa lưu được lên web, sẽ thử lại ở lần thay đổi sau')}
 function chain(key,fn){pend++;setSync();const prev=chains.get(key)||Promise.resolve();
   const p=prev.catch(()=>{}).then(fn).catch(e=>{dbErr(e);return null}).finally(()=>{pend--;setSync()});chains.set(key,p);return p}
@@ -443,7 +443,9 @@ async function initSupabase(){
     if(!rows.length)await migrateLocal();
     const lo=$('#logout');lo.hidden=false;lo.onclick=async()=>{try{await sb.auth.signOut()}catch(e){}location.reload()};
     setSync();return true}
-  catch(e){store.sb=false;sb=null;toast('Chưa kết nối được Supabase, đang dùng bộ nhớ trình duyệt');return false}}
+  catch(e){console.error('Supabase',e);store.sb=false;sb=null;
+    const d=e&&(e.message||e.error_description||e.code)||String(e),hint=/relation|does not exist|schema cache|42P01|PGRST205/i.test(d)?' (chưa tạo bảng store: chạy lại đoạn SQL)':/JWT|apikey|key/i.test(d)?' (kiểm tra khoá Supabase)':/fetch|network/i.test(d)?' (kiểm tra mạng hoặc địa chỉ dự án)':'';
+    store.err='Lỗi Supabase: '+d+hint;toast(store.err,12000);return false}}
 async function initStore(){
   let db=null,uid=null;
   try{if(window.claude){db=await window.claude.use('db');const u=await window.claude.use('user');if(u)uid=await u.id()}}catch(e){}
